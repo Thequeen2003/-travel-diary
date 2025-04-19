@@ -1,18 +1,28 @@
+// ✅ Patch Web Crypto for Node.js (for Vite or anything using getRandomValues)
+import { webcrypto } from 'crypto';
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto as Crypto;
+}
+
+// ✅ Load environment variables early
 import * as dotenv from 'dotenv';
 dotenv.config();
 console.log('Loaded environment variables:', {
   SUPABASE_URL: process.env.SUPABASE_URL ? '✓ defined' : '✗ missing',
   SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY ? '✓ defined' : '✗ missing'
 });
-import express, { type Request, Response, NextFunction } from "express";
+
+import express, { type Request, type Response, type NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
 const app = express();
-// Increase the limit to 50mb to handle larger image data URLs
+
+// Increase body limits for large photo data
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: false, limit: '50mb' }));
 
+// ✅ API Logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -44,44 +54,43 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  const server = await registerRoutes(app);
+  try {
+    const server = await registerRoutes(app);
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+    // Central error handler
+    app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+      const status = err.status || err.statusCode || 500;
+      const message = err.message || "Internal Server Error";
+      res.status(status).json({ message });
+      console.error(err);
+    });
 
-    res.status(status).json({ message });
-    console.error(err); // Log the error instead of throwing
-  });
-
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
-  if (app.get("env") === "development") {
-    await setupVite(app, server);
-  } else {
-    serveStatic(app);
-  }
-
-  // Use the PORT environment variable provided by Vercel if available
-  // In Replit use port 5000, for Vercel it will use process.env.PORT
-  const port = process.env.PORT || 5000;
-  
-  // Handle errors when port is in use
-  server.on('error', (error: any) => {
-    if (error.code === 'EADDRINUSE') {
-      console.log(`Port ${port} is in use, trying another port...`);
-      // Try port 3000 instead
-      server.listen(3000, () => {
-        log(`serving on port 3000 (fallback)`);
-      });
+    // Vite dev middleware or serve static build
+    if (app.get("env") === "development") {
+      await setupVite(app, server);
     } else {
-      console.error('Server error:', error);
+      serveStatic(app);
     }
-  });
 
-  // Start server
-  server.listen(port, () => {
-    log(`serving on port ${port}`);
-  });
+    const port = process.env.PORT || 5000;
+
+    // 🎯 Start listening and handle port conflicts
+    server.listen(port, () => {
+      log(`✅ Server running at http://localhost:${port}`);
+    });
+
+    server.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE") {
+        const fallbackPort = 3000;
+        console.warn(`⚠️ Port ${port} is in use. Trying fallback port ${fallbackPort}...`);
+        server.listen(fallbackPort, () => {
+          log(`✅ Server running on fallback port http://localhost:${fallbackPort}`);
+        });
+      } else {
+        console.error("❌ Server error:", err);
+      }
+    });
+  } catch (err) {
+    console.error("❌ Failed to start server:", err);
+  }
 })();
