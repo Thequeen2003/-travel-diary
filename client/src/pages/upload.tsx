@@ -24,21 +24,9 @@ import { apiRequest } from '@/lib/queryClient';
 import { uploadImage } from '@/lib/supabase';
 import { insertEntrySchema } from '@shared/schema';
 
-// Create a form validation schema
-const uploadFormSchema = z.object({
-  userId: z.string(),
+// Extend the schema with validation
+const uploadFormSchema = insertEntrySchema.extend({
   captionText: z.string().min(3, { message: 'Caption must be at least 3 characters long' }),
-  imageUrl: z.string().optional(),
-  caption: z.string().optional(),
-  location: z.object({
-    lat: z.number(),
-    lng: z.number()
-  }).nullable().optional(),
-  screenInfo: z.object({
-    width: z.number(),
-    height: z.number(),
-    orientation: z.string()
-  })
 });
 
 type UploadFormValues = z.infer<typeof uploadFormSchema>;
@@ -94,7 +82,6 @@ export default function Upload() {
   // Mutation for creating entry
   const createEntryMutation = useMutation({
     mutationFn: async (data: UploadFormValues) => {
-      console.log("Creating entry with data:", data);
       return await apiRequest('POST', '/api/entries', data);
     },
     onSuccess: () => {
@@ -134,9 +121,36 @@ export default function Upload() {
 
   const getLocation = () => {
     setIsGettingLocation(true);
+    
+    // Check if running on mobile
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    // Log debug info
+    console.log('Device details:', {
+      userAgent: navigator.userAgent,
+      isMobile,
+      hasGeolocation: !!navigator.geolocation
+    });
+    
     if (navigator.geolocation) {
+      // Set options for geolocation request
+      const options = {
+        enableHighAccuracy: true,    // Get the best possible result
+        timeout: isMobile ? 20000 : 10000,  // Longer timeout for mobile devices
+        maximumAge: 0                // Don't use cached position
+      };
+      
+      toast({
+        title: 'Getting Location',
+        description: 'Please wait while we find your location...',
+        duration: 3000
+      });
+      
+      // Try to get location
       navigator.geolocation.getCurrentPosition(
+        // Success callback
         (position) => {
+          console.log('Location success:', position.coords);
           const newLocation = {
             lat: position.coords.latitude,
             lng: position.coords.longitude,
@@ -144,21 +158,50 @@ export default function Upload() {
           setLocation(newLocation);
           form.setValue('location', newLocation);
           setIsGettingLocation(false);
+          
+          toast({
+            title: 'Location Found',
+            description: 'Successfully captured your current location.',
+          });
         },
+        // Error callback with specific error messages and retry advice
         (error) => {
           console.error('Error getting location:', error);
+          let errorMessage = 'Unable to get your current location.';
+          let helpMessage = '';
+          
+          switch(error.code) {
+            case error.PERMISSION_DENIED:
+              errorMessage = 'Location permission was denied.';
+              helpMessage = 'Please check your browser or device settings and enable location services.';
+              break;
+            case error.POSITION_UNAVAILABLE:
+              errorMessage = 'Location information is unavailable.';
+              helpMessage = isMobile ? 
+                'Try these steps: 1) Go outdoors for better GPS signal, 2) Turn on "High accuracy" mode in your location settings, 3) Ensure any battery saver mode is off.' :
+                'Please try again or consider entering your location manually.';
+              break;
+            case error.TIMEOUT:
+              errorMessage = 'Location request timed out.';
+              helpMessage = 'Please try again in an area with better signal, or check if your GPS is enabled.';
+              break;
+          }
+          
           toast({
             title: 'Location Error',
-            description: 'Unable to get your current location.',
+            description: `${errorMessage} ${helpMessage}`,
             variant: 'destructive',
+            duration: 7000
           });
           setIsGettingLocation(false);
-        }
+        },
+        // Options
+        options
       );
     } else {
       toast({
         title: 'Location Not Supported',
-        description: 'Geolocation is not supported by your browser.',
+        description: 'Geolocation is not supported by your browser or device.',
         variant: 'destructive',
       });
       setIsGettingLocation(false);
@@ -233,83 +276,47 @@ export default function Upload() {
   };
 
   const onSubmit = async (data: UploadFormValues) => {
-    try {
-      if (!file) {
-        toast({
-          title: 'Missing Image',
-          description: 'Please upload an image or take a photo.',
-          variant: 'destructive',
-        });
-        return;
-      }
-  
-      if (!user) {
-        toast({
-          title: 'Authentication Error',
-          description: 'You must be logged in to create an entry.',
-          variant: 'destructive',
-        });
-        return;
-      }
-  
-      // Show loading toast
+    if (!file) {
       toast({
-        title: 'Uploading...',
-        description: 'Your image is being uploaded, please wait.',
-      });
-  
-      console.log('Uploading image for user:', user.id);
-      console.log('File details:', {
-        name: file.name,
-        type: file.type,
-        size: file.size,
-      });
-  
-      // Upload image to Supabase Storage
-      const imageUrl = await uploadImage(file, user.id);
-      console.log('Image upload result:', imageUrl);
-      
-      if (!imageUrl) {
-        toast({
-          title: 'Upload Error',
-          description: 'Failed to upload image. Please try again.',
-          variant: 'destructive',
-        });
-        return;
-      }
-  
-      // For development testing, if we get a placeholder URL, show a warning
-      if (imageUrl.includes('example.com/placeholder')) {
-        console.log('Using placeholder URL due to Supabase storage issues');
-        toast({
-          title: 'Using Test Image',
-          description: 'Supabase storage not accessible, proceeding with test image.',
-        });
-      }
-  
-      // Prepare entry data with all required fields
-      const entryData: UploadFormValues = {
-        ...data,
-        userId: user.id,
-        imageUrl,
-        caption: data.captionText || '',  // Set caption for API consistency
-        captionText: data.captionText || '',
-        location: location,
-        screenInfo
-      };
-  
-      console.log('Creating entry with data:', entryData);
-  
-      // Create diary entry
-      createEntryMutation.mutate(entryData);
-    } catch (error) {
-      console.error('Error in onSubmit:', error);
-      toast({
-        title: 'Error',
-        description: 'An unexpected error occurred. Please try again.',
+        title: 'Missing Image',
+        description: 'Please upload an image or take a photo.',
         variant: 'destructive',
       });
+      return;
     }
+
+    if (!user) {
+      toast({
+        title: 'Authentication Error',
+        description: 'You must be logged in to create an entry.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Upload image to Supabase Storage
+    const imageUrl = await uploadImage(file, user.id);
+    
+    if (!imageUrl) {
+      toast({
+        title: 'Upload Error',
+        description: 'Failed to upload image. Please try again.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const entryData: UploadFormValues = {
+      ...data,
+      userId: user.id,
+      imageUrl,
+      caption: data.captionText,
+      location: location,
+      screenInfo
+    };
+
+    // Create diary entry
+    createEntryMutation.mutate(entryData);
   };
 
   if (!user) {
@@ -546,3 +553,4 @@ export default function Upload() {
     </div>
   );
 }
+
